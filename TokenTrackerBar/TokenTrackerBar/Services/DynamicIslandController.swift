@@ -138,6 +138,9 @@ final class DynamicIslandController: NSObject {
     /// Keeps the transparent panel click-through during transitions.
     private var acceptsIslandInteraction = false
     private var observers: [NSObjectProtocol] = []
+    /// Same-space / legacy full-screen often changes presentation options
+    /// without a Space or app-activation notification.
+    private var presentationObservation: NSKeyValueObservation?
     /// While > 0 a tray menu spawned from the island is open; hover-out must
     /// not collapse the island under the menu.
     private var menuHoldCount = 0
@@ -182,10 +185,17 @@ final class DynamicIslandController: NSObject {
         ) { [weak self] _ in
             Task { @MainActor [weak self] in self?.handleFullscreenEnvironmentChange() }
         })
+        presentationObservation = NSApp.observe(
+            \.currentSystemPresentationOptions,
+            options: [.new]
+        ) { [weak self] _, _ in
+            Task { @MainActor [weak self] in self?.handleFullscreenEnvironmentChange() }
+        }
     }
 
     deinit {
         visibilityWorkItem?.cancel()
+        presentationObservation?.invalidate()
         for observer in observers {
             NotificationCenter.default.removeObserver(observer)
             NSWorkspace.shared.notificationCenter.removeObserver(observer)
@@ -198,6 +208,7 @@ final class DynamicIslandController: NSObject {
 
     func setEnabled(_ enabled: Bool) {
         UserDefaults.standard.set(enabled, forKey: Self.enabledDefaultsKey)
+        fullscreenActive = readFullscreenActive()
         applyPresence()
     }
 

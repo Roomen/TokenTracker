@@ -59,6 +59,16 @@ test("island presence is gated on a testable full-screen policy", () => {
   );
   assert.match(
     controllerSource,
+    /NSApp\.observe\(\s*\\\.currentSystemPresentationOptions/,
+    "same-space full-screen changes presentation options without a Space or app switch",
+  );
+  assert.match(
+    controllerSource,
+    /func setEnabled\([\s\S]*?fullscreenActive = readFullscreenActive\(\)[\s\S]*?applyPresence\(\)/,
+    "enabling the island must re-read full-screen state so it does not appear over an already full-screen app",
+  );
+  assert.match(
+    controllerSource,
     /CGRectMakeWithDictionaryRepresentation/,
     "window bounds must come from the CFDictionary helper; a [String: CGFloat] cast drops real window lists",
   );
