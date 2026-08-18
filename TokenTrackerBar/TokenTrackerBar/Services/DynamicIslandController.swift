@@ -548,10 +548,8 @@ final class DynamicIslandController: NSObject {
         applyPresence()
     }
 
-    /// On-screen window coverage of the island's screen is the source of
-    /// truth so a full-screen app on an external display does not hide the
-    /// island on the notched laptop. Presentation options are the fallback
-    /// when the window list cannot be read.
+    /// Hide only when a full-screen app occupies the island's own screen.
+    /// Presentation options are the single-display fallback.
     private func readFullscreenActive() -> Bool {
         let options = NSApp.currentSystemPresentationOptions
         let presentation = DynamicIslandFullscreenPolicy.presentationLooksFullscreen(

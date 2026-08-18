@@ -113,18 +113,17 @@ enum DynamicIslandFullscreenPolicy {
             && windowBounds.maxY >= screenFrame.maxY - 1
     }
 
-    /// Prefer a definite on-screen window verdict so an external-display
-    /// full-screen app does not hide the island on the notched screen.
-    /// On a single display, presentation options still catch exclusive
-    /// capture that publishes no covering window. Fall back to presentation
-    /// when the window list is unavailable.
+    /// Only the island's own screen counts. A covering window on that screen
+    /// is decisive. Presentation options are system-wide, so they may only
+    /// break a tie on a single display (or when the window list is missing
+    /// there). Multiple displays never hide from presentation alone.
     static func isFullscreenAppActive(
         windowCoversIslandScreen: Bool?,
         presentationLooksFullscreen: Bool,
         screenCount: Int
     ) -> Bool {
         if windowCoversIslandScreen == true { return true }
-        if windowCoversIslandScreen == false && screenCount > 1 { return false }
+        if screenCount > 1 { return false }
         return presentationLooksFullscreen
     }
 }

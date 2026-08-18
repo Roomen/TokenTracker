@@ -270,7 +270,7 @@ final class DynamicIslandLayoutPolicyTests: XCTestCase {
                 screenCount: 2
             )
         )
-        XCTAssertTrue(
+        XCTAssertFalse(
             DynamicIslandFullscreenPolicy.isFullscreenAppActive(
                 windowCoversIslandScreen: nil,
                 presentationLooksFullscreen: true,
