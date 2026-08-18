@@ -147,4 +147,142 @@ final class DynamicIslandLayoutPolicyTests: XCTestCase {
         XCTAssertFalse(tracker.owns(closing))
         XCTAssertTrue(tracker.owns(reopening))
     }
+
+    func testPanelStaysHiddenWhileFeatureOffOrFullscreen() {
+        XCTAssertTrue(
+            DynamicIslandFullscreenPolicy.shouldShowPanel(
+                featureEnabled: true,
+                fullscreenActive: false
+            )
+        )
+        XCTAssertFalse(
+            DynamicIslandFullscreenPolicy.shouldShowPanel(
+                featureEnabled: true,
+                fullscreenActive: true
+            )
+        )
+        XCTAssertFalse(
+            DynamicIslandFullscreenPolicy.shouldShowPanel(
+                featureEnabled: false,
+                fullscreenActive: false
+            )
+        )
+        XCTAssertFalse(
+            DynamicIslandFullscreenPolicy.shouldShowPanel(
+                featureEnabled: false,
+                fullscreenActive: true
+            )
+        )
+    }
+
+    func testPresentationFullscreenIgnoresPartialMenuBarOrDockHide() {
+        XCTAssertTrue(
+            DynamicIslandFullscreenPolicy.presentationLooksFullscreen(
+                containsFullScreen: true,
+                hidesMenuBar: false,
+                hidesDock: false
+            )
+        )
+        XCTAssertTrue(
+            DynamicIslandFullscreenPolicy.presentationLooksFullscreen(
+                containsFullScreen: false,
+                hidesMenuBar: true,
+                hidesDock: true
+            )
+        )
+        XCTAssertFalse(
+            DynamicIslandFullscreenPolicy.presentationLooksFullscreen(
+                containsFullScreen: false,
+                hidesMenuBar: true,
+                hidesDock: false
+            )
+        )
+        XCTAssertFalse(
+            DynamicIslandFullscreenPolicy.presentationLooksFullscreen(
+                containsFullScreen: false,
+                hidesMenuBar: false,
+                hidesDock: true
+            )
+        )
+        XCTAssertFalse(
+            DynamicIslandFullscreenPolicy.presentationLooksFullscreen(
+                containsFullScreen: false,
+                hidesMenuBar: false,
+                hidesDock: false
+            )
+        )
+    }
+
+    func testWindowCoverageTreatsMenuBarOverlapAsFullscreenNotZoom() {
+        let screen = CGRect(x: 0, y: 0, width: 1_440, height: 900)
+        let fullscreen = screen
+        let zoomed = CGRect(x: 0, y: 0, width: 1_440, height: 875)
+        let splitHalf = CGRect(x: 0, y: 0, width: 720, height: 900)
+
+        XCTAssertTrue(
+            DynamicIslandFullscreenPolicy.windowCoversScreenIncludingMenuBar(
+                windowBounds: fullscreen,
+                screenFrame: screen
+            )
+        )
+        XCTAssertFalse(
+            DynamicIslandFullscreenPolicy.windowCoversScreenIncludingMenuBar(
+                windowBounds: zoomed,
+                screenFrame: screen
+            )
+        )
+        XCTAssertFalse(
+            DynamicIslandFullscreenPolicy.windowCoversScreenIncludingMenuBar(
+                windowBounds: splitHalf,
+                screenFrame: screen
+            )
+        )
+    }
+
+    func testQuartzBoundsConvertAgainstPrimaryDisplayTop() {
+        let converted = DynamicIslandFullscreenPolicy.appKitRect(
+            fromQuartz: CGRect(x: 100, y: 0, width: 200, height: 50),
+            primaryMaxY: 900
+        )
+
+        XCTAssertEqual(converted, CGRect(x: 100, y: 850, width: 200, height: 50))
+    }
+
+    func testFullscreenVerdictPrefersWindowCoverageOverPresentation() {
+        XCTAssertFalse(
+            DynamicIslandFullscreenPolicy.isFullscreenAppActive(
+                windowCoversIslandScreen: false,
+                presentationLooksFullscreen: true,
+                screenCount: 2
+            )
+        )
+        XCTAssertTrue(
+            DynamicIslandFullscreenPolicy.isFullscreenAppActive(
+                windowCoversIslandScreen: false,
+                presentationLooksFullscreen: true,
+                screenCount: 1
+            )
+        )
+        XCTAssertTrue(
+            DynamicIslandFullscreenPolicy.isFullscreenAppActive(
+                windowCoversIslandScreen: true,
+                presentationLooksFullscreen: false,
+                screenCount: 2
+            )
+        )
+        XCTAssertTrue(
+            DynamicIslandFullscreenPolicy.isFullscreenAppActive(
+                windowCoversIslandScreen: nil,
+                presentationLooksFullscreen: true,
+                screenCount: 2
+            )
+        )
+        XCTAssertFalse(
+            DynamicIslandFullscreenPolicy.isFullscreenAppActive(
+                windowCoversIslandScreen: nil,
+                presentationLooksFullscreen: false,
+                screenCount: 1
+            )
+        )
+    }
 }

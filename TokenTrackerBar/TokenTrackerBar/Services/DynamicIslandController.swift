@@ -141,6 +141,10 @@ final class DynamicIslandController: NSObject {
     /// While > 0 a tray menu spawned from the island is open; hover-out must
     /// not collapse the island under the menu.
     private var menuHoldCount = 0
+    /// True when a full-screen app occupies the island's screen. Independent
+    /// of `isEnabled` so turning the island off while full-screen does not
+    /// re-show it on exit.
+    private var fullscreenActive = false
 
     init(viewModel: DashboardViewModel) {
         self.viewModel = viewModel
@@ -151,7 +155,10 @@ final class DynamicIslandController: NSObject {
             object: nil,
             queue: .main
         ) { [weak self] _ in
-            Task { @MainActor [weak self] in self?.repositionPanel() }
+            Task { @MainActor [weak self] in
+                self?.handleFullscreenEnvironmentChange()
+                self?.repositionPanel()
+            }
         })
         observers.append(NotificationCenter.default.addObserver(
             forName: .nativeSettingsChanged,
@@ -160,12 +167,28 @@ final class DynamicIslandController: NSObject {
         ) { [weak self] _ in
             Task { @MainActor [weak self] in self?.state.settingsTick += 1 }
         })
+        let workspace = NSWorkspace.shared.notificationCenter
+        observers.append(workspace.addObserver(
+            forName: NSWorkspace.activeSpaceDidChangeNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in self?.handleFullscreenEnvironmentChange() }
+        })
+        observers.append(workspace.addObserver(
+            forName: NSWorkspace.didActivateApplicationNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in self?.handleFullscreenEnvironmentChange() }
+        })
     }
 
     deinit {
         visibilityWorkItem?.cancel()
         for observer in observers {
             NotificationCenter.default.removeObserver(observer)
+            NSWorkspace.shared.notificationCenter.removeObserver(observer)
         }
     }
 
@@ -175,15 +198,17 @@ final class DynamicIslandController: NSObject {
 
     func setEnabled(_ enabled: Bool) {
         UserDefaults.standard.set(enabled, forKey: Self.enabledDefaultsKey)
-        if enabled { show() } else { hide() }
+        applyPresence()
     }
 
     /// Re-show the island on launch if it was enabled when the app last quit.
     func restoreIfNeeded() {
-        if isEnabled { show() }
+        fullscreenActive = readFullscreenActive()
+        applyPresence()
     }
 
     func show() {
+        guard shouldShowPanel else { return }
         let panel = panel ?? makePanel()
         self.panel = panel
         let wasVisible = state.isPanelVisible && panel.isVisible
@@ -216,7 +241,7 @@ final class DynamicIslandController: NSObject {
         DispatchQueue.main.async { [weak self, weak panel] in
             guard let self, let panel,
                   self.visibilityTransitions.owns(transition),
-                  self.isEnabled
+                  self.shouldShowPanel
             else { return }
             panel.alphaValue = 1
             withAnimation(.timingCurve(0.16, 1, 0.3, 1, duration: DynamicIslandVisibilityPolicy.showDuration)) {
@@ -226,7 +251,7 @@ final class DynamicIslandController: NSObject {
                 after: DynamicIslandVisibilityPolicy.showDuration,
                 transition: transition
             ) { controller in
-                guard controller.isEnabled else { return }
+                guard controller.shouldShowPanel else { return }
                 controller.acceptsIslandInteraction = true
                 controller.panel?.updateHitRegion()
             }
@@ -265,7 +290,7 @@ final class DynamicIslandController: NSObject {
             after: DynamicIslandVisibilityPolicy.hideCompletionDelay,
             transition: transition
         ) { controller in
-            guard !controller.isEnabled else { return }
+            guard !controller.shouldShowPanel else { return }
             controller.state.isPanelVisible = false
             controller.panel?.orderOut(nil)
         }
@@ -489,6 +514,97 @@ final class DynamicIslandController: NSObject {
         return NSRect(x: x, y: y, width: width, height: height)
     }
 
+    // MARK: - Full-screen presence
+
+    private var shouldShowPanel: Bool {
+        DynamicIslandFullscreenPolicy.shouldShowPanel(
+            featureEnabled: isEnabled,
+            fullscreenActive: fullscreenActive
+        )
+    }
+
+    private func applyPresence() {
+        if shouldShowPanel {
+            guard !(state.isPanelVisible && panel?.isVisible == true) else { return }
+            show()
+        } else {
+            hide()
+        }
+    }
+
+    private func handleFullscreenEnvironmentChange() {
+        fullscreenActive = readFullscreenActive()
+        applyPresence()
+    }
+
+    /// On-screen window coverage of the island's screen is the source of
+    /// truth so a full-screen app on an external display does not hide the
+    /// island on the notched laptop. Presentation options are the fallback
+    /// when the window list cannot be read.
+    private func readFullscreenActive() -> Bool {
+        let options = NSApp.currentSystemPresentationOptions
+        let presentation = DynamicIslandFullscreenPolicy.presentationLooksFullscreen(
+            containsFullScreen: options.contains(.fullScreen),
+            hidesMenuBar: options.contains(.hideMenuBar),
+            hidesDock: options.contains(.hideDock)
+        )
+        return DynamicIslandFullscreenPolicy.isFullscreenAppActive(
+            windowCoversIslandScreen: islandScreenHasFullscreenWindow(),
+            presentationLooksFullscreen: presentation,
+            screenCount: NSScreen.screens.count
+        )
+    }
+
+    private static let fullscreenIgnoredWindowOwners: Set<String> = [
+        "Dock", "Window Server", "WindowServer", "SystemUIServer",
+        "Control Center", "Notification Centre", "Notification Center",
+    ]
+
+    /// `nil` when the window list is unavailable so the caller can fall back.
+    private func islandScreenHasFullscreenWindow() -> Bool? {
+        guard let screen = targetScreen(),
+              let primary = NSScreen.screens.first
+        else { return false }
+        let cgOptions = CGWindowListOption(arrayLiteral: .optionOnScreenOnly, .excludeDesktopElements)
+        guard let infoList = CGWindowListCopyWindowInfo(cgOptions, kCGNullWindowID) as? [[String: Any]] else {
+            return nil
+        }
+
+        let screenFrame = screen.frame
+        let primaryMaxY = primary.frame.maxY
+
+        for info in infoList {
+            if let alpha = info[kCGWindowAlpha as String] as? NSNumber, alpha.doubleValue <= 0 {
+                continue
+            }
+            // Dock (20) / menu bar (24) can report screen-sized frames.
+            // Screensaver (1000) should still hide the island.
+            let layer = (info[kCGWindowLayer as String] as? NSNumber)?.intValue ?? 0
+            if layer >= 20 && layer < 1000 { continue }
+            if let owner = info[kCGWindowOwnerName as String] as? String,
+               Self.fullscreenIgnoredWindowOwners.contains(owner) {
+                continue
+            }
+            // kCGWindowBounds is a CFDictionary of NSNumbers; a Swift
+            // `[String: CGFloat]` cast drops every real window.
+            guard let boundsDict = info[kCGWindowBounds as String] as? NSDictionary else { continue }
+            var quartzRect = CGRect.zero
+            guard CGRectMakeWithDictionaryRepresentation(boundsDict, &quartzRect) else { continue }
+
+            let windowBounds = DynamicIslandFullscreenPolicy.appKitRect(
+                fromQuartz: quartzRect,
+                primaryMaxY: primaryMaxY
+            )
+            if DynamicIslandFullscreenPolicy.windowCoversScreenIncludingMenuBar(
+                windowBounds: windowBounds,
+                screenFrame: screenFrame
+            ) {
+                return true
+            }
+        }
+        return false
+    }
+
     /// Recompute geometry and re-pin to the current target screen (display
     /// plug/unplug, lid close, resolution change).
     private func repositionPanel() {
@@ -564,9 +680,10 @@ final class DynamicIslandController: NSObject {
         // shadow would trace the transparent frame rect instead.
         panel.hasShadow = false
         // Sit above the menu bar so the island hugs the notch, ride along to
-        // every Space / full-screen app, stay out of Cmd-Tab.
+        // every regular Space, stay out of Cmd-Tab. Omit .fullScreenAuxiliary
+        // so the island does not overlay another app's full-screen Space.
         panel.level = .statusBar
-        panel.collectionBehavior = [.canJoinAllSpaces, .stationary, .fullScreenAuxiliary, .ignoresCycle]
+        panel.collectionBehavior = [.canJoinAllSpaces, .stationary, .ignoresCycle]
         panel.hidesOnDeactivate = false
         panel.isReleasedWhenClosed = false
         panel.acceptsMouseMovedEvents = true

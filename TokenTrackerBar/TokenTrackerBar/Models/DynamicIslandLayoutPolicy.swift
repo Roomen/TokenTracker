@@ -70,6 +70,65 @@ enum DynamicIslandVisibilityPolicy {
     }
 }
 
+/// Presence gate so a user-disabled island and an active full-screen app
+/// both suppress the panel without coupling those two reasons.
+enum DynamicIslandFullscreenPolicy {
+    static func shouldShowPanel(featureEnabled: Bool, fullscreenActive: Bool) -> Bool {
+        featureEnabled && !fullscreenActive
+    }
+
+    /// Native green-button full-screen sets `.fullScreen`. Legacy / video
+    /// players typically hide both the menu bar and the Dock without that
+    /// flag. System auto-hide preferences use different flags and must not
+    /// be passed in as `hides*`.
+    static func presentationLooksFullscreen(
+        containsFullScreen: Bool,
+        hidesMenuBar: Bool,
+        hidesDock: Bool
+    ) -> Bool {
+        containsFullScreen || (hidesMenuBar && hidesDock)
+    }
+
+    /// Quartz window bounds are top-left on the primary display; AppKit
+    /// screen frames are bottom-left. `primaryMaxY` is the primary screen's
+    /// `frame.maxY`.
+    static func appKitRect(fromQuartz rect: CGRect, primaryMaxY: CGFloat) -> CGRect {
+        CGRect(
+            x: rect.origin.x,
+            y: primaryMaxY - rect.origin.y - rect.height,
+            width: rect.width,
+            height: rect.height
+        )
+    }
+
+    /// A window that covers a screen including its menu-bar strip is in
+    /// full-screen, not merely zoomed to `visibleFrame`.
+    static func windowCoversScreenIncludingMenuBar(
+        windowBounds: CGRect,
+        screenFrame: CGRect
+    ) -> Bool {
+        windowBounds.minX <= screenFrame.minX + 1
+            && windowBounds.maxX >= screenFrame.maxX - 1
+            && windowBounds.minY <= screenFrame.minY + 1
+            && windowBounds.maxY >= screenFrame.maxY - 1
+    }
+
+    /// Prefer a definite on-screen window verdict so an external-display
+    /// full-screen app does not hide the island on the notched screen.
+    /// On a single display, presentation options still catch exclusive
+    /// capture that publishes no covering window. Fall back to presentation
+    /// when the window list is unavailable.
+    static func isFullscreenAppActive(
+        windowCoversIslandScreen: Bool?,
+        presentationLooksFullscreen: Bool,
+        screenCount: Int
+    ) -> Bool {
+        if windowCoversIslandScreen == true { return true }
+        if windowCoversIslandScreen == false && screenCount > 1 { return false }
+        return presentationLooksFullscreen
+    }
+}
+
 /// Rejects stale delayed completions after rapid toggles.
 struct DynamicIslandVisibilityTransitionTracker {
     private(set) var current = 0
