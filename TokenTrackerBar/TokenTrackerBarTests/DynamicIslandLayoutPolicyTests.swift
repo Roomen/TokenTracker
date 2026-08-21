@@ -130,13 +130,17 @@ final class DynamicIslandLayoutPolicyTests: XCTestCase {
         )
     }
 
-    func testFullscreenRetryIntervalIsPositiveAndLowFrequency() {
-        let interval = DynamicIslandFullscreenRetryPolicy.retryInterval
+    func testFullscreenSettleDelaysAreShortBoundedAndIncreasing() {
+        let delays = DynamicIslandFullscreenRetryPolicy.settleDelays
 
-        XCTAssertGreaterThan(interval, 0)
-        // Low-frequency: ~1s, not a tight burst.
-        XCTAssertGreaterThanOrEqual(interval, 0.5)
-        XCTAssertLessThanOrEqual(interval, 2.0)
+        // Bounded burst, not a heartbeat: 2-4 delays, each short.
+        XCTAssertGreaterThanOrEqual(delays.count, 2)
+        XCTAssertLessThanOrEqual(delays.count, 4)
+        for delay in delays {
+            XCTAssertGreaterThan(delay, 0)
+            XCTAssertLessThanOrEqual(delay, 1.5)
+        }
+        XCTAssertEqual(delays, delays.sorted(), "delays should back off, not tick at a fixed rate")
     }
 
     func testForceShowWhenRestoringDuringMidHide() {

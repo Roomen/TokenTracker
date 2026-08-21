@@ -148,14 +148,16 @@ final class DynamicIslandController: NSObject {
     /// of `isEnabled` so turning the island off while full-screen does not
     /// re-show it on exit.
     private var fullscreenActive = false
-    /// Pending retry that re-reads the window list after an environment
-    /// change. Non-nil while a retry is scheduled.
-    private var fullscreenRetryWorkItem: DispatchWorkItem?
+    /// Pending settle tick that re-reads the window list after an environment
+    /// change. Non-nil while a settle burst is running.
+    private var fullscreenSettleWorkItem: DispatchWorkItem?
+    /// Index into `fullscreenSettleDelays` for the next scheduled tick.
+    private var fullscreenSettleAttempt = 0
 
-    /// Persistent retry interval — read from the policy so unit tests that
-    /// change the policy also change the rate.
-    private static let retryInterval: TimeInterval =
-        DynamicIslandFullscreenRetryPolicy.retryInterval
+    /// Bounded settle-burst delays — read from the policy so unit tests that
+    /// change the policy also change the schedule.
+    private static let fullscreenSettleDelays: [TimeInterval] =
+        DynamicIslandFullscreenRetryPolicy.settleDelays
 
     init(viewModel: DashboardViewModel) {
         self.viewModel = viewModel
@@ -213,7 +215,7 @@ final class DynamicIslandController: NSObject {
 
     deinit {
         visibilityWorkItem?.cancel()
-        fullscreenRetryWorkItem?.cancel()
+        fullscreenSettleWorkItem?.cancel()
         presentationObservation?.invalidate()
         for observer in observers {
             NotificationCenter.default.removeObserver(observer)
@@ -227,15 +229,15 @@ final class DynamicIslandController: NSObject {
 
     func setEnabled(_ enabled: Bool) {
         UserDefaults.standard.set(enabled, forKey: Self.enabledDefaultsKey)
-        cancelFullscreenRetry()
+        cancelFullscreenSettleRetries()
         fullscreenActive = readFullscreenActive()
         applyPresence()
-        // Only keep the persistent retry running when the feature is both
-        // enabled and currently suppressed by full-screen. Disabling while
-        // full-screen must not leave a timer ticking to re-read the window
-        // list for no reason.
+        // Only arm a settle burst when the feature is both enabled and
+        // currently suppressed by full-screen. Disabling while full-screen
+        // must not leave a tick scheduled to re-read the window list for no
+        // reason.
         if enabled && fullscreenActive {
-            scheduleFullscreenRetry()
+            armFullscreenSettleRetries()
         }
     }
 
@@ -244,7 +246,7 @@ final class DynamicIslandController: NSObject {
         fullscreenActive = readFullscreenActive()
         applyPresence()
         if fullscreenActive {
-            scheduleFullscreenRetry()
+            armFullscreenSettleRetries()
         }
     }
 
@@ -576,14 +578,14 @@ final class DynamicIslandController: NSObject {
             ) {
                 beginVisibilityTransition()
                 show()
-                cancelFullscreenRetry()
+                cancelFullscreenSettleRetries()
                 return
             }
             guard !(state.isPanelVisible && panel?.isVisible == true) else { return }
             show()
             // A successful show means the island is restored; no need to keep
-            // retrying.
-            cancelFullscreenRetry()
+            // settling.
+            cancelFullscreenSettleRetries()
         } else {
             hide()
         }
@@ -592,44 +594,57 @@ final class DynamicIslandController: NSObject {
     private func handleFullscreenEnvironmentChange() {
         fullscreenActive = readFullscreenActive()
         applyPresence()
-        // A space-change notification can fire before the covering window is
-        // dropped from the window list, so the first read can still report
-        // fullscreen. While suppressed *because of fullscreen* (not because
-        // the user disabled the island), keep a low-rate retry running so a
-        // stale window list does not stick `fullscreenActive == true` forever.
-        // This is the persistent mechanism — it survives gaps where no
-        // notification fires (user exits full-screen while the app is in the
-        // background), unlike a fixed 3-attempt burst that exhausts before
-        // the user returns.
+        // A space-change / activation / presentation-options notification can
+        // fire before the covering window is dropped from the window list, so
+        // the first read can still report fullscreen. Arm a short, bounded
+        // settle burst to catch up — native full-screen enter/exit both fire
+        // an observer, so restore never has to survive a silent gap; it only
+        // has to outlast the window list's own catch-up delay after a signal
+        // already fired.
         if fullscreenActive {
-            scheduleFullscreenRetry()
+            armFullscreenSettleRetries()
         } else {
-            cancelFullscreenRetry()
+            cancelFullscreenSettleRetries()
         }
     }
 
-    /// Schedules a persistent low-frequency re-read of the full-screen window
-    /// list. Reschedules itself every ~1s while `isEnabled && fullscreenActive`.
-    /// Stops once restored, disabled, or deinit'd.
-    private func scheduleFullscreenRetry() {
-        fullscreenRetryWorkItem?.cancel()
+    /// Arms a bounded, coalesced settle burst after an environment signal.
+    /// Cancels any burst already in flight and restarts the delay sequence
+    /// from the top — a new signal supersedes a stale one rather than
+    /// stacking with it.
+    private func armFullscreenSettleRetries() {
+        fullscreenSettleWorkItem?.cancel()
+        fullscreenSettleWorkItem = nil
+        fullscreenSettleAttempt = 0
+        scheduleNextFullscreenSettle()
+    }
+
+    /// Schedules the next `DynamicIslandFullscreenRetryPolicy.settleDelays`
+    /// tick. Each tick re-reads the window list and calls `applyPresence()`;
+    /// if still full-screen and delays remain it schedules the next one, and
+    /// after the last delay it simply stops — this is a bounded burst, not a
+    /// loop.
+    private func scheduleNextFullscreenSettle() {
+        guard fullscreenSettleAttempt < Self.fullscreenSettleDelays.count else { return }
+        let delay = Self.fullscreenSettleDelays[fullscreenSettleAttempt]
+        fullscreenSettleAttempt += 1
         let workItem = DispatchWorkItem { [weak self] in
             guard let self else { return }
-            self.fullscreenRetryWorkItem = nil
+            self.fullscreenSettleWorkItem = nil
             guard self.isEnabled else { return }
             self.fullscreenActive = self.readFullscreenActive()
             self.applyPresence()
-            if self.fullscreenActive {
-                self.scheduleFullscreenRetry()
-            }
+            guard self.fullscreenActive else { return }
+            self.scheduleNextFullscreenSettle()
         }
-        fullscreenRetryWorkItem = workItem
-        DispatchQueue.main.asyncAfter(deadline: .now() + Self.retryInterval, execute: workItem)
+        fullscreenSettleWorkItem = workItem
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: workItem)
     }
 
-    private func cancelFullscreenRetry() {
-        fullscreenRetryWorkItem?.cancel()
-        fullscreenRetryWorkItem = nil
+    private func cancelFullscreenSettleRetries() {
+        fullscreenSettleWorkItem?.cancel()
+        fullscreenSettleWorkItem = nil
+        fullscreenSettleAttempt = 0
     }
 
     /// Hide only when a full-screen app occupies the island's own screen.

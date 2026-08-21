@@ -129,19 +129,20 @@ enum DynamicIslandFullscreenPolicy {
     }
 }
 
-/// Persistent retry schedule for re-reading the full-screen window list.
-/// Extracted so the interval is unit-testable and the controller never
-/// hardcodes it.
+/// Coalesced settle schedule for re-reading the full-screen window list after
+/// an environment signal (space change, activation, presentation-options
+/// change). Extracted so the schedule is unit-testable and the controller
+/// never hardcodes it.
 enum DynamicIslandFullscreenRetryPolicy {
-    /// Low-frequency re-read interval while `isEnabled && fullscreenActive`.
+    /// Delays for a bounded re-read burst fired after an environment signal.
     /// A space-change notification can fire before the covering window is
-    /// dropped from the window list, so the first read can be stale; this
-    /// interval gives the window server time to settle. The retry keeps
-    /// running until restored, disabled, or deinit'd — it is not a bounded
-    /// burst, because the user may exit full-screen long after the last
-    /// notification fired (a 3-attempt burst would have exhausted during the
-    /// full-screen session itself).
-    static let retryInterval: TimeInterval = 1.0
+    /// dropped from the window list, so the first read (and often the second)
+    /// can still be stale; these delays give the window server time to
+    /// settle. Bounded, not a heartbeat: native full-screen enter/exit both
+    /// fire an observer, so a retry never has to survive an arbitrary gap
+    /// with no signal — it only has to outlast the window list's own catch-up
+    /// window after one has already fired.
+    static let settleDelays: [TimeInterval] = [0.15, 0.45, 1.0]
 }
 
 /// Restore-path decision during a mid-flight hide. When the island should
