@@ -1,4 +1,5 @@
 import CoreGraphics
+import Foundation
 
 /// Pure layout policy shared by the Dynamic Island controller and view.
 ///
@@ -126,6 +127,27 @@ enum DynamicIslandFullscreenPolicy {
         if screenCount > 1 { return false }
         return presentationLooksFullscreen
     }
+}
+
+/// Retry schedule for re-reading the full-screen window list after an
+/// environment change. Extracted so the intervals are unit-testable and the
+/// controller never hardcodes them.
+enum DynamicIslandFullscreenRetryPolicy {
+    /// Delayed re-reads after a space/presentation change. A space-change
+    /// notification can fire before `CGWindowListCopyWindowInfo` drops the
+    /// covering window, so the first read can be stale; these intervals give
+    /// the window server time to settle before we give up.
+    static let intervals: [TimeInterval] = [0.15, 0.5, 1.0]
+
+    /// Returns the next retry interval for the given zero-based attempt, or
+    /// nil when the schedule is exhausted.
+    static func nextInterval(attempt: Int) -> TimeInterval? {
+        guard attempt < intervals.count else { return nil }
+        return intervals[attempt]
+    }
+
+    /// Total number of retries the policy will schedule.
+    static let maxAttempts = intervals.count
 }
 
 /// Rejects stale delayed completions after rapid toggles.

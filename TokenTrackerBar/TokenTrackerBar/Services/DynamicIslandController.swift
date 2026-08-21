@@ -148,6 +148,14 @@ final class DynamicIslandController: NSObject {
     /// of `isEnabled` so turning the island off while full-screen does not
     /// re-show it on exit.
     private var fullscreenActive = false
+    /// Pending retry that re-reads the window list after an environment
+    /// change. Non-nil while a retry is scheduled.
+    private var fullscreenRetryWorkItem: DispatchWorkItem?
+
+    /// Persistent retry interval — the last (longest) entry in the retry
+    /// policy, so unit tests that change the policy also change the rate.
+    private static let retryInterval: TimeInterval =
+        DynamicIslandFullscreenRetryPolicy.intervals.last ?? 1.0
 
     init(viewModel: DashboardViewModel) {
         self.viewModel = viewModel
@@ -162,6 +170,16 @@ final class DynamicIslandController: NSObject {
                 self?.handleFullscreenEnvironmentChange()
                 self?.repositionPanel()
             }
+        })
+        observers.append(NotificationCenter.default.addObserver(
+            forName: NSApplication.didBecomeActiveNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            // Necessary but not sufficient: activation settles the window list
+            // and presentation options, so it catches the case where the other
+            // notifications never fired while the app was in the background.
+            Task { @MainActor [weak self] in self?.handleFullscreenEnvironmentChange() }
         })
         observers.append(NotificationCenter.default.addObserver(
             forName: .nativeSettingsChanged,
@@ -195,6 +213,7 @@ final class DynamicIslandController: NSObject {
 
     deinit {
         visibilityWorkItem?.cancel()
+        fullscreenRetryWorkItem?.cancel()
         presentationObservation?.invalidate()
         for observer in observers {
             NotificationCenter.default.removeObserver(observer)
@@ -208,14 +227,21 @@ final class DynamicIslandController: NSObject {
 
     func setEnabled(_ enabled: Bool) {
         UserDefaults.standard.set(enabled, forKey: Self.enabledDefaultsKey)
+        cancelFullscreenRetry()
         fullscreenActive = readFullscreenActive()
         applyPresence()
+        if fullscreenActive {
+            scheduleFullscreenRetry()
+        }
     }
 
     /// Re-show the island on launch if it was enabled when the app last quit.
     func restoreIfNeeded() {
         fullscreenActive = readFullscreenActive()
         applyPresence()
+        if fullscreenActive {
+            scheduleFullscreenRetry()
+        }
     }
 
     func show() {
@@ -536,8 +562,21 @@ final class DynamicIslandController: NSObject {
 
     private func applyPresence() {
         if shouldShowPanel {
+            // If a hide animation is mid-flight, cancel the pending completion
+            // and reverse it. The panel is still on screen mid-collapse, so
+            // we must call show() directly — the isPanelVisible guard below
+            // would skip it and the island would stay hidden.
+            if state.isVisibilityDismissing {
+                beginVisibilityTransition()
+                show()
+                cancelFullscreenRetry()
+                return
+            }
             guard !(state.isPanelVisible && panel?.isVisible == true) else { return }
             show()
+            // A successful show means the island is restored; no need to keep
+            // retrying.
+            cancelFullscreenRetry()
         } else {
             hide()
         }
@@ -546,6 +585,44 @@ final class DynamicIslandController: NSObject {
     private func handleFullscreenEnvironmentChange() {
         fullscreenActive = readFullscreenActive()
         applyPresence()
+        // A space-change notification can fire before the covering window is
+        // dropped from the window list, so the first read can still report
+        // fullscreen. While suppressed *because of fullscreen* (not because
+        // the user disabled the island), keep a low-rate retry running so a
+        // stale window list does not stick `fullscreenActive == true` forever.
+        // This is the persistent mechanism — it survives gaps where no
+        // notification fires (user exits full-screen while the app is in the
+        // background), unlike a fixed 3-attempt burst that exhausts before
+        // the user returns.
+        if fullscreenActive {
+            scheduleFullscreenRetry()
+        } else {
+            cancelFullscreenRetry()
+        }
+    }
+
+    /// Schedules a persistent low-frequency re-read of the full-screen window
+    /// list. Reschedules itself every ~1s while `isEnabled && fullscreenActive`.
+    /// Stops once restored, disabled, or deinit'd.
+    private func scheduleFullscreenRetry() {
+        fullscreenRetryWorkItem?.cancel()
+        let workItem = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            self.fullscreenRetryWorkItem = nil
+            guard self.isEnabled else { return }
+            self.fullscreenActive = self.readFullscreenActive()
+            self.applyPresence()
+            if self.fullscreenActive {
+                self.scheduleFullscreenRetry()
+            }
+        }
+        fullscreenRetryWorkItem = workItem
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.retryInterval, execute: workItem)
+    }
+
+    private func cancelFullscreenRetry() {
+        fullscreenRetryWorkItem?.cancel()
+        fullscreenRetryWorkItem = nil
     }
 
     /// Hide only when a full-screen app occupies the island's own screen.

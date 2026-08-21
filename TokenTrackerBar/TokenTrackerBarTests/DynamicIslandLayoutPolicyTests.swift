@@ -130,6 +130,39 @@ final class DynamicIslandLayoutPolicyTests: XCTestCase {
         )
     }
 
+    func testFullscreenRetryPolicyIntervalsArePositiveAndEscalating() {
+        let intervals = DynamicIslandFullscreenRetryPolicy.intervals
+
+        XCTAssertEqual(intervals.count, 3)
+        XCTAssertGreaterThan(intervals[0], 0)
+        XCTAssertGreaterThan(intervals[1], intervals[0])
+        XCTAssertGreaterThan(intervals[2], intervals[1])
+    }
+
+    func testFullscreenRetryPolicyExhaustsAfterMaxAttempts() {
+        XCTAssertEqual(
+            DynamicIslandFullscreenRetryPolicy.nextInterval(attempt: 0),
+            DynamicIslandFullscreenRetryPolicy.intervals[0]
+        )
+        XCTAssertEqual(
+            DynamicIslandFullscreenRetryPolicy.nextInterval(attempt: 1),
+            DynamicIslandFullscreenRetryPolicy.intervals[1]
+        )
+        XCTAssertEqual(
+            DynamicIslandFullscreenRetryPolicy.nextInterval(attempt: 2),
+            DynamicIslandFullscreenRetryPolicy.intervals[2]
+        )
+        XCTAssertNil(DynamicIslandFullscreenRetryPolicy.nextInterval(attempt: 3))
+        XCTAssertNil(DynamicIslandFullscreenRetryPolicy.nextInterval(attempt: 100))
+    }
+
+    func testFullscreenRetryPolicyMaxAttemptsMatchesIntervalCount() {
+        XCTAssertEqual(
+            DynamicIslandFullscreenRetryPolicy.maxAttempts,
+            DynamicIslandFullscreenRetryPolicy.intervals.count
+        )
+    }
+
     func testHideCompletionIncludesCompositorSettleDelay() {
         XCTAssertEqual(
             DynamicIslandVisibilityPolicy.hideCompletionDelay,
