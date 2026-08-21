@@ -152,10 +152,10 @@ final class DynamicIslandController: NSObject {
     /// change. Non-nil while a retry is scheduled.
     private var fullscreenRetryWorkItem: DispatchWorkItem?
 
-    /// Persistent retry interval — the last (longest) entry in the retry
-    /// policy, so unit tests that change the policy also change the rate.
+    /// Persistent retry interval — read from the policy so unit tests that
+    /// change the policy also change the rate.
     private static let retryInterval: TimeInterval =
-        DynamicIslandFullscreenRetryPolicy.intervals.last ?? 1.0
+        DynamicIslandFullscreenRetryPolicy.retryInterval
 
     init(viewModel: DashboardViewModel) {
         self.viewModel = viewModel
@@ -230,7 +230,11 @@ final class DynamicIslandController: NSObject {
         cancelFullscreenRetry()
         fullscreenActive = readFullscreenActive()
         applyPresence()
-        if fullscreenActive {
+        // Only keep the persistent retry running when the feature is both
+        // enabled and currently suppressed by full-screen. Disabling while
+        // full-screen must not leave a timer ticking to re-read the window
+        // list for no reason.
+        if enabled && fullscreenActive {
             scheduleFullscreenRetry()
         }
     }

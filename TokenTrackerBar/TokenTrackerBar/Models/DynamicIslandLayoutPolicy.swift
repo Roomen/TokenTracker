@@ -129,25 +129,34 @@ enum DynamicIslandFullscreenPolicy {
     }
 }
 
-/// Retry schedule for re-reading the full-screen window list after an
-/// environment change. Extracted so the intervals are unit-testable and the
-/// controller never hardcodes them.
+/// Persistent retry schedule for re-reading the full-screen window list.
+/// Extracted so the interval is unit-testable and the controller never
+/// hardcodes it.
 enum DynamicIslandFullscreenRetryPolicy {
-    /// Delayed re-reads after a space/presentation change. A space-change
-    /// notification can fire before `CGWindowListCopyWindowInfo` drops the
-    /// covering window, so the first read can be stale; these intervals give
-    /// the window server time to settle before we give up.
-    static let intervals: [TimeInterval] = [0.15, 0.5, 1.0]
+    /// Low-frequency re-read interval while `isEnabled && fullscreenActive`.
+    /// A space-change notification can fire before the covering window is
+    /// dropped from the window list, so the first read can be stale; this
+    /// interval gives the window server time to settle. The retry keeps
+    /// running until restored, disabled, or deinit'd — it is not a bounded
+    /// burst, because the user may exit full-screen long after the last
+    /// notification fired (a 3-attempt burst would have exhausted during the
+    /// full-screen session itself).
+    static let retryInterval: TimeInterval = 1.0
+}
 
-    /// Returns the next retry interval for the given zero-based attempt, or
-    /// nil when the schedule is exhausted.
-    static func nextInterval(attempt: Int) -> TimeInterval? {
-        guard attempt < intervals.count else { return nil }
-        return intervals[attempt]
+/// Restore-path decision during a mid-flight hide. When the island should
+/// show but a hide animation is still settling, the controller must force
+/// show() rather than letting the `isPanelVisible && panel.isVisible` guard
+/// skip it — the panel is still on screen mid-collapse and would otherwise
+/// stay hidden until the next environment change.
+enum DynamicIslandRestorePolicy {
+    /// Whether the restore path must force-show through a mid-flight hide.
+    static func mustForceShowDuringDismissal(
+        shouldShowPanel: Bool,
+        isVisibilityDismissing: Bool
+    ) -> Bool {
+        shouldShowPanel && isVisibilityDismissing
     }
-
-    /// Total number of retries the policy will schedule.
-    static let maxAttempts = intervals.count
 }
 
 /// Rejects stale delayed completions after rapid toggles.

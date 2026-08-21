@@ -130,36 +130,50 @@ final class DynamicIslandLayoutPolicyTests: XCTestCase {
         )
     }
 
-    func testFullscreenRetryPolicyIntervalsArePositiveAndEscalating() {
-        let intervals = DynamicIslandFullscreenRetryPolicy.intervals
+    func testFullscreenRetryIntervalIsPositiveAndLowFrequency() {
+        let interval = DynamicIslandFullscreenRetryPolicy.retryInterval
 
-        XCTAssertEqual(intervals.count, 3)
-        XCTAssertGreaterThan(intervals[0], 0)
-        XCTAssertGreaterThan(intervals[1], intervals[0])
-        XCTAssertGreaterThan(intervals[2], intervals[1])
+        XCTAssertGreaterThan(interval, 0)
+        // Low-frequency: ~1s, not a tight burst.
+        XCTAssertGreaterThanOrEqual(interval, 0.5)
+        XCTAssertLessThanOrEqual(interval, 2.0)
     }
 
-    func testFullscreenRetryPolicyExhaustsAfterMaxAttempts() {
-        XCTAssertEqual(
-            DynamicIslandFullscreenRetryPolicy.nextInterval(attempt: 0),
-            DynamicIslandFullscreenRetryPolicy.intervals[0]
-        )
-        XCTAssertEqual(
-            DynamicIslandFullscreenRetryPolicy.nextInterval(attempt: 1),
-            DynamicIslandFullscreenRetryPolicy.intervals[1]
-        )
-        XCTAssertEqual(
-            DynamicIslandFullscreenRetryPolicy.nextInterval(attempt: 2),
-            DynamicIslandFullscreenRetryPolicy.intervals[2]
-        )
-        XCTAssertNil(DynamicIslandFullscreenRetryPolicy.nextInterval(attempt: 3))
-        XCTAssertNil(DynamicIslandFullscreenRetryPolicy.nextInterval(attempt: 100))
+    func testFullscreenRetryIsPersistentNotBounded() {
+        // The retry is not a bounded burst: there is no maxAttempts counter
+        // and no nextInterval(attempt:) that returns nil. The policy exposes
+        // a single interval that the controller reschedules itself with
+        // while `isEnabled && fullscreenActive`.
+        XCTAssertNoThrow(DynamicIslandFullscreenRetryPolicy.retryInterval)
     }
 
-    func testFullscreenRetryPolicyMaxAttemptsMatchesIntervalCount() {
-        XCTAssertEqual(
-            DynamicIslandFullscreenRetryPolicy.maxAttempts,
-            DynamicIslandFullscreenRetryPolicy.intervals.count
+    func testForceShowWhenRestoringDuringMidHide() {
+        // The user exits full-screen during a hide animation: the panel is
+        // still on screen mid-collapse, so the restore path must force-show
+        // through the `isPanelVisible && panel.isVisible` guard.
+        XCTAssertTrue(
+            DynamicIslandRestorePolicy.mustForceShowDuringDismissal(
+                shouldShowPanel: true,
+                isVisibilityDismissing: true
+            )
+        )
+        XCTAssertFalse(
+            DynamicIslandRestorePolicy.mustForceShowDuringDismissal(
+                shouldShowPanel: true,
+                isVisibilityDismissing: false
+            )
+        )
+        XCTAssertFalse(
+            DynamicIslandRestorePolicy.mustForceShowDuringDismissal(
+                shouldShowPanel: false,
+                isVisibilityDismissing: true
+            )
+        )
+        XCTAssertFalse(
+            DynamicIslandRestorePolicy.mustForceShowDuringDismissal(
+                shouldShowPanel: false,
+                isVisibilityDismissing: false
+            )
         )
     }
 
