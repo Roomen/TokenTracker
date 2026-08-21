@@ -83,3 +83,32 @@ test("npm metadata carries the current product hook", () => {
   assert.ok(pkg.keywords.includes("desktop-widget"));
   assert.ok(pkg.keywords.includes("ai-coding-tools"));
 });
+
+test("dashboard JSON-LD scripts parse as valid JSON", () => {
+  const index = read("dashboard/index.html");
+  const blocks = [...index.matchAll(/<script type="application\/ld\+json">([\s\S]*?)<\/script>/g)]
+    .map((match) => match[1]);
+  assert.ok(blocks.length > 0, "dashboard/index.html includes JSON-LD");
+
+  const parsed = blocks.map((block, i) => {
+    try {
+      return JSON.parse(block);
+    } catch (err) {
+      assert.fail(`JSON-LD block ${i} failed to parse: ${err.message}`);
+    }
+  });
+
+  const graph = parsed.flatMap((doc) => (Array.isArray(doc["@graph"]) ? doc["@graph"] : [doc]));
+
+  const faq = graph.find((node) => node["@type"] === "FAQPage");
+  assert.ok(faq, "JSON-LD includes an FAQPage");
+  const supportedClis = (faq.mainEntity || []).find((entity) =>
+    entity.name === "Which AI coding CLIs does Token Tracker support?",
+  );
+  assert.ok(supportedClis, "FAQ includes the supported-CLIs question");
+  assert.equal(supportedClis["@type"], "Question");
+
+  const tools = graph.find((node) => node["@type"] === "ItemList" && node.name === "Supported AI coding agent CLIs");
+  assert.ok(tools, "JSON-LD includes the coding-tools ItemList");
+  assert.ok(Array.isArray(tools.itemListElement), "coding-tools ItemList is an array");
+});
