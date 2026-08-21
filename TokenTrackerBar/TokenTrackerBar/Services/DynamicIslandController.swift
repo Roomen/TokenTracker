@@ -570,7 +570,10 @@ final class DynamicIslandController: NSObject {
             // and reverse it. The panel is still on screen mid-collapse, so
             // we must call show() directly — the isPanelVisible guard below
             // would skip it and the island would stay hidden.
-            if state.isVisibilityDismissing {
+            if DynamicIslandRestorePolicy.mustForceShowDuringDismissal(
+                shouldShowPanel: shouldShowPanel,
+                isVisibilityDismissing: state.isVisibilityDismissing
+            ) {
                 beginVisibilityTransition()
                 show()
                 cancelFullscreenRetry()

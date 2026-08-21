@@ -73,3 +73,36 @@ test("island presence is gated on a testable full-screen policy", () => {
     "window bounds must come from the CFDictionary helper; a [String: CGFloat] cast drops real window lists",
   );
 });
+
+test("Dynamic Island restore after full-screen exit survives with no exit notification", () => {
+  assert.match(
+    controllerSource,
+    /func scheduleFullscreenRetry\(\)[\s\S]*?if self\.fullscreenActive \{\s*\n\s*self\.scheduleFullscreenRetry\(\)/,
+    "the retry work item must reschedule itself while fullscreenActive — an unbounded loop, not a bounded burst",
+  );
+  assert.match(
+    controllerSource,
+    /deinit[\s\S]*?fullscreenRetryWorkItem\?\.cancel\(\)/,
+    "deinit must cancel the pending retry work item",
+  );
+  assert.match(
+    controllerSource,
+    /func setEnabled\([\s\S]*?(?:fullscreenRetryWorkItem\?\.cancel\(\)|cancelFullscreenRetry\(\))/,
+    "setEnabled must cancel the pending retry work item",
+  );
+  assert.match(
+    controllerSource,
+    /func setEnabled\([\s\S]*?if enabled && fullscreenActive \{\s*\n\s*scheduleFullscreenRetry\(\)/,
+    "setEnabled must only reschedule the retry when enabled && fullscreenActive",
+  );
+  assert.match(
+    controllerSource,
+    /DynamicIslandRestorePolicy\.mustForceShowDuringDismissal\(/,
+    "applyPresence must consult the testable restore policy, not an inlined isVisibilityDismissing check",
+  );
+  assert.match(
+    controllerSource,
+    /NSApplication\.didBecomeActiveNotification/,
+    "app activation must remain a restore signal even though it alone cannot cover a background exit",
+  );
+});
