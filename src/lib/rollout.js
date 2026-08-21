@@ -15673,6 +15673,21 @@ async function retractStaleGrokQueueRows(queuePath, keepKeys) {
   return lines.length;
 }
 
+function pruneMissingGrokProjectUpdateOffsets(projectUpdateOffsets) {
+  if (!projectUpdateOffsets || typeof projectUpdateOffsets !== "object") return;
+  for (const updatesPath of Object.keys(projectUpdateOffsets)) {
+    if (typeof updatesPath !== "string" || !updatesPath) {
+      delete projectUpdateOffsets[updatesPath];
+      continue;
+    }
+    try {
+      if (!fssync.existsSync(updatesPath)) delete projectUpdateOffsets[updatesPath];
+    } catch {
+      delete projectUpdateOffsets[updatesPath];
+    }
+  }
+}
+
 function grokTryDecodeUriComponent(value) {
   if (typeof value !== "string") return null;
   const trimmed = value.trim();
@@ -16106,6 +16121,8 @@ async function parseGrokBuildIncremental({
       onProgress({ index: index + 1, total: sessionList.length, bucketsQueued: touchedBuckets.size });
     }
   }
+
+  if (projectEnabled) pruneMissingGrokProjectUpdateOffsets(projectUpdateOffsets);
 
   let bucketsQueued = queuePath
     ? await enqueueTouchedBuckets({ queuePath, hourlyState, touchedBuckets })

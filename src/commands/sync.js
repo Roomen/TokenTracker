@@ -2260,7 +2260,12 @@ async function cmdSync(argv, context = {}) {
     }
 
     // ── Grok Build (xAI) ──
-    let grokResult = { recordsProcessed: 0, eventsAggregated: 0, bucketsQueued: 0 };
+    let grokResult = {
+      recordsProcessed: 0,
+      eventsAggregated: 0,
+      bucketsQueued: 0,
+      projectBucketsQueued: 0,
+    };
     // Full passive scan of all Grok sessions (historical + any not covered by hook)
     const grokSessions = sourceAllowed("grok") ? resolveGrokBuildSessions(process.env) : [];
     const grokSessionInputs = [...grokSessions];
@@ -2333,6 +2338,8 @@ async function cmdSync(argv, context = {}) {
         recordsProcessed: grokResult.recordsProcessed + grokScanResult.recordsProcessed,
         eventsAggregated: grokResult.eventsAggregated + grokScanResult.eventsAggregated,
         bucketsQueued: grokResult.bucketsQueued + grokScanResult.bucketsQueued,
+        projectBucketsQueued:
+          (grokResult.projectBucketsQueued || 0) + (grokScanResult.projectBucketsQueued || 0),
       };
     }
     if (isFullSourceScan && opts.repairGrok) {
@@ -2761,6 +2768,7 @@ async function cmdSync(argv, context = {}) {
       cursorStore.requiresCommit !== true &&
       totalParsed === 0 &&
       totalBuckets === 0 &&
+      !(grokResult.projectBucketsQueued > 0) &&
       !codexColdAuditDue &&
       !codexFallbackRetryRan &&
       !grokHookSignalConsumed &&

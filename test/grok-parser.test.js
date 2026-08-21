@@ -663,3 +663,65 @@ test("parseGrokBuildIncremental project backfill uses independent watermark snap
   );
 });
 
+test("parseGrokBuildIncremental drops project offsets for deleted session files", async () => {
+  const repoDir = fs.mkdtempSync(path.join(os.tmpdir(), "tt-grok-prune-git-"));
+  writeGitOrigin(repoDir, "https://github.com/acme/grok-project.git");
+
+  const keep = makeSession({
+    sessionId: "019f0000-keep-session",
+    cwd: repoDir,
+    summaryInfo: { cwd: repoDir },
+    turns: [grokTurnUsage()],
+  });
+  const drop = makeSession({
+    sessionId: "019f0000-drop-session",
+    cwd: repoDir,
+    summaryInfo: { cwd: repoDir },
+    turns: [grokTurnUsage({ promptId: "prompt-drop" })],
+  });
+  const keepUpdates = path.join(keep.sessionDir, "updates.jsonl");
+  const dropUpdates = path.join(drop.sessionDir, "updates.jsonl");
+  const queuePath = path.join(keep.root, "queue.jsonl");
+  const projectQueuePath = path.join(keep.root, "project.queue.jsonl");
+  const cursors = {
+    hourly: { version: 3, buckets: {}, groupQueued: {} },
+    grok: { version: 4 },
+  };
+
+  await parseGrokBuildIncremental({
+    sessions: [
+      { sessionDir: keep.sessionDir, sessionId: keep.sessionId, encodedCwd: keep.encodedCwd },
+      { sessionDir: drop.sessionDir, sessionId: drop.sessionId, encodedCwd: drop.encodedCwd },
+    ],
+    cursors,
+    queuePath,
+    projectQueuePath,
+    env: keep.env,
+  });
+  assert.ok(cursors.grok.projectUpdateOffsets[keepUpdates]);
+  assert.ok(cursors.grok.projectUpdateOffsets[dropUpdates]);
+
+  fs.rmSync(drop.sessionDir, { recursive: true, force: true });
+  const stalePath = path.join(keep.root, "missing-updates.jsonl");
+  cursors.grok.projectUpdateOffsets[stalePath] = { size: 12, mtimeMs: 1, ino: 1 };
+
+  await parseGrokBuildIncremental({
+    sessions: [
+      { sessionDir: keep.sessionDir, sessionId: keep.sessionId, encodedCwd: keep.encodedCwd },
+    ],
+    cursors,
+    queuePath,
+    projectQueuePath,
+    env: keep.env,
+  });
+  assert.ok(cursors.grok.projectUpdateOffsets[keepUpdates]);
+  assert.equal(cursors.grok.projectUpdateOffsets[dropUpdates], undefined);
+  assert.equal(cursors.grok.projectUpdateOffsets[stalePath], undefined);
+});
+
+test("sync.js does not skip cursor commit when Grok only queues project buckets", () => {
+  const src = fs.readFileSync(path.join(__dirname, "../src/commands/sync.js"), "utf8");
+  assert.match(src, /grokScanResult\.projectBucketsQueued/);
+  assert.match(src, /!\(grokResult\.projectBucketsQueued > 0\)/);
+});
+
