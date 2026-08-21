@@ -82,12 +82,12 @@ test("Dynamic Island restore after full-screen exit survives with no exit notifi
   );
   assert.match(
     controllerSource,
-    /deinit[\s\S]*?fullscreenRetryWorkItem\?\.cancel\(\)/,
+    /deinit\s*\{[^}]*fullscreenRetryWorkItem\?\.cancel\(\)/,
     "deinit must cancel the pending retry work item",
   );
   assert.match(
     controllerSource,
-    /func setEnabled\([\s\S]*?(?:fullscreenRetryWorkItem\?\.cancel\(\)|cancelFullscreenRetry\(\))/,
+    /func setEnabled\([^)]*\)\s*\{[^}]*(?:fullscreenRetryWorkItem\?\.cancel\(\)|cancelFullscreenRetry\(\))/,
     "setEnabled must cancel the pending retry work item",
   );
   assert.match(
