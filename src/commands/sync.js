@@ -2282,6 +2282,11 @@ async function cmdSync(argv, context = {}) {
           sessionId: hookSessionId,
           sessionDir:
             typeof grokHookSignal.sessionDir === "string" ? grokHookSignal.sessionDir : undefined,
+          cwd: typeof grokHookSignal.cwd === "string" ? grokHookSignal.cwd : undefined,
+          encodedCwd:
+            typeof grokHookSignal.sessionDir === "string" && grokHookSignal.sessionDir
+              ? path.basename(path.dirname(grokHookSignal.sessionDir))
+              : undefined,
           updatesPath:
             typeof grokHookSignal.updatesPath === "string" ? grokHookSignal.updatesPath : undefined,
           signalsPath:
@@ -2311,6 +2316,7 @@ async function cmdSync(argv, context = {}) {
           sessions: grokSessionInputs,
           cursors,
           queuePath,
+          projectQueuePath,
           env: process.env,
           onProgress: (p) => {
             if (!progress?.enabled) return;

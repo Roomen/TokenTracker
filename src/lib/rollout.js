@@ -15673,10 +15673,46 @@ async function retractStaleGrokQueueRows(queuePath, keepKeys) {
   return lines.length;
 }
 
+function grokTryDecodeUriComponent(value) {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+  try {
+    const decoded = decodeURIComponent(trimmed).trim();
+    return decoded || null;
+  } catch {
+    return null;
+  }
+}
+
+function grokEncodedCwdLooksEncoded(value) {
+  return typeof value === "string" && /%[0-9A-Fa-f]{2}/.test(value);
+}
+
+// First non-empty wins: summary.info.cwd, hook sess.cwd, decode(encodedCwd),
+// then decode(basename(dirname(sessionDir))). Do not guess from updates.jsonl.
+function resolveGrokSessionCwd(sess, summary) {
+  const summaryCwd = summary?.info?.cwd;
+  if (typeof summaryCwd === "string" && summaryCwd.trim()) return summaryCwd.trim();
+  if (typeof sess?.cwd === "string" && sess.cwd.trim()) return sess.cwd.trim();
+  if (grokEncodedCwdLooksEncoded(sess?.encodedCwd)) {
+    const decoded = grokTryDecodeUriComponent(sess.encodedCwd);
+    if (decoded) return decoded;
+  }
+  const sessionDir = typeof sess?.sessionDir === "string" ? sess.sessionDir.trim() : "";
+  if (sessionDir) {
+    const decoded = grokTryDecodeUriComponent(path.basename(path.dirname(sessionDir)));
+    if (decoded) return decoded;
+  }
+  return null;
+}
+
 async function parseGrokBuildIncremental({
   sessions,
   cursors = {},
   queuePath,
+  projectQueuePath,
+  publicRepoResolver,
   onProgress,
   env = process.env
 } = {}) {
@@ -15720,6 +15756,25 @@ async function parseGrokBuildIncremental({
     typeof grokState.updateOffsets === "object"
       ? grokState.updateOffsets
       : {};
+
+  const projectEnabled = typeof projectQueuePath === "string" && projectQueuePath.length > 0;
+  const projectState = projectEnabled ? normalizeProjectState(cursors?.projectHourly) : null;
+  const projectTouchedBuckets = projectEnabled ? new Set() : null;
+  const projectMetaCache = projectEnabled ? new Map() : null;
+  const publicRepoCache = projectEnabled ? new Map() : null;
+  // Independent of global updateOffsets so an upgrade can backfill historical
+  // turn_completed events into project.queue.jsonl without re-appending totals.
+  const projectUpdateOffsets =
+    projectEnabled &&
+    grokState.projectUpdateOffsets &&
+    typeof grokState.projectUpdateOffsets === "object"
+      ? { ...grokState.projectUpdateOffsets }
+      : {};
+  const projectSessionSnapshots = projectEnabled
+    ? normalizeGrokSessionSnapshots({
+        sessionSnapshots: grokState.projectSessionSnapshots,
+      })
+    : {};
 
   // Rebuilt from the sessions seen this scan, so entries for deleted session
   // dirs are pruned and the cursor stays bounded by the on-disk session count.
@@ -15893,6 +15948,160 @@ async function parseGrokBuildIncremental({
       };
     }
 
+    if (projectEnabled) {
+      const cwd = resolveGrokSessionCwd(sess, summary);
+      if (cwd) {
+        const projectContext = await resolveProjectContextForPath({
+          startDir: wsl.mapWslCwdToUnc(cwd, updatesPath || sess?.sessionDir || cwd),
+          projectMetaCache,
+          publicRepoCache,
+          publicRepoResolver,
+          projectState,
+        });
+        const projectRef = projectContext?.projectRef || null;
+        const projectKey = projectContext?.projectKey || null;
+        // Only advance the project cursor on successful public_verified attribution.
+        // Blocked / missing git / unverified stay unadvanced so a later sync can retry.
+        if (projectKey && projectRef) {
+          const projectPrevious = projectSessionSnapshots[sessionId] || {};
+          const projectPreviousTotal = normalizeNonNegativeNumber(projectPrevious.totalTokens);
+          const projectPreviousMessageCount = normalizeNonNegativeNumber(
+            projectPrevious.messageCount,
+          );
+          let projectSawTurnUsage = projectPrevious.source === "turn_usage";
+          let projectCumulativeTotal = projectPreviousTotal;
+          let projectTokenDelta = 0;
+          let projectFinalTouchedHourStart = null;
+          let projectSource = projectPrevious.source || null;
+          let projectLastModel = projectPrevious.model || model;
+          const projectPendingDeltas = [];
+
+          const projectUpdates = await readGrokUpdateTokenEvents(
+            updatesPath,
+            lastActive,
+            updatesPath ? projectUpdateOffsets[updatesPath] : null,
+            { fallbackModel: model },
+          );
+
+          for (const event of projectUpdates.turnEvents) {
+            projectSawTurnUsage = true;
+            const hourStartStr =
+              toUtcHalfHourStart(event.timestamp) ||
+              toUtcHalfHourStart(lastActive) ||
+              toUtcHalfHourStart(Date.now());
+            if (!hourStartStr) continue;
+            const eventModel = event.model || model;
+            const delta = {
+              input_tokens: event.input_tokens,
+              cached_input_tokens: event.cached_input_tokens,
+              cache_creation_input_tokens: event.cache_creation_input_tokens,
+              output_tokens: event.output_tokens,
+              reasoning_output_tokens: event.reasoning_output_tokens,
+              total_tokens: event.total_tokens,
+              billable_total_tokens: event.billable_total_tokens,
+              conversation_count: event.conversation_count || 1,
+            };
+            projectPendingDeltas.push({ model: eventModel, hourStartStr, delta });
+            projectCumulativeTotal += event.total_tokens;
+            projectTokenDelta += event.total_tokens;
+            projectFinalTouchedHourStart = hourStartStr;
+            projectSource = "turn_usage";
+            projectLastModel = eventModel;
+          }
+
+          // Watermark fallback uses the independent project snapshot, never
+          // global sessionSnapshots.totalTokens, and never stacks on turn usage.
+          if (!projectSawTurnUsage) {
+            let highWatermark = projectPreviousTotal;
+            for (const event of projectUpdates.contextEvents) {
+              if (event.totalTokens <= highWatermark) continue;
+              const deltaTokens = event.totalTokens - highWatermark;
+              highWatermark = event.totalTokens;
+              const hourStartStr =
+                toUtcHalfHourStart(event.timestamp) ||
+                toUtcHalfHourStart(lastActive) ||
+                toUtcHalfHourStart(Date.now());
+              if (!hourStartStr) continue;
+              const delta = estimateGrokTokenDelta(deltaTokens, 0, {
+                allowZeroConversationCount: true,
+              });
+              projectPendingDeltas.push({ model, hourStartStr, delta });
+              projectTokenDelta += deltaTokens;
+              projectFinalTouchedHourStart = hourStartStr;
+              projectSource = "updates";
+            }
+
+            const effectiveSignalTotal = grokEffectiveTotalFromSignals(safeSignals);
+            if (effectiveSignalTotal > highWatermark) {
+              const deltaTokens = effectiveSignalTotal - highWatermark;
+              highWatermark = effectiveSignalTotal;
+              const hourStartStr =
+                toUtcHalfHourStart(lastActive) || toUtcHalfHourStart(Date.now());
+              if (hourStartStr) {
+                const delta = estimateGrokTokenDelta(deltaTokens, 0, {
+                  allowZeroConversationCount: true,
+                });
+                projectPendingDeltas.push({ model, hourStartStr, delta });
+                projectTokenDelta += deltaTokens;
+                projectFinalTouchedHourStart = hourStartStr;
+                projectSource = "signals";
+              }
+            }
+            projectCumulativeTotal = Math.max(projectPreviousTotal, highWatermark);
+          }
+
+          const projectFinalTotal = Math.max(projectPreviousTotal, projectCumulativeTotal);
+
+          // legacyBaselineOnly applies only to global buckets.
+          for (const pending of projectPendingDeltas) {
+            const projectBucket = getProjectBucket(
+              projectState,
+              projectKey,
+              "grok",
+              pending.hourStartStr,
+              projectRef,
+            );
+            addTotals(projectBucket.totals, pending.delta);
+            projectTouchedBuckets.add(
+              projectBucketKey(projectKey, "grok", pending.hourStartStr),
+            );
+          }
+
+          if (!projectSawTurnUsage && projectTokenDelta > 0 && projectFinalTouchedHourStart) {
+            const deltaMessageCount =
+              messageCount > projectPreviousMessageCount
+                ? messageCount - projectPreviousMessageCount
+                : 1;
+            const projectBucket = getProjectBucket(
+              projectState,
+              projectKey,
+              "grok",
+              projectFinalTouchedHourStart,
+              projectRef,
+            );
+            addTotals(projectBucket.totals, { conversation_count: deltaMessageCount });
+            projectTouchedBuckets.add(
+              projectBucketKey(projectKey, "grok", projectFinalTouchedHourStart),
+            );
+          }
+
+          if (updatesPath && projectUpdates.offsetEntry) {
+            projectUpdateOffsets[updatesPath] = projectUpdates.offsetEntry;
+          }
+
+          if (projectFinalTotal > 0 && (projectTokenDelta > 0 || projectPreviousTotal > 0)) {
+            projectSessionSnapshots[sessionId] = {
+              totalTokens: projectFinalTotal,
+              messageCount: Math.max(projectPreviousMessageCount, messageCount),
+              model: projectLastModel || model,
+              source: projectSource || projectPrevious.source || null,
+              updatedAt: new Date().toISOString(),
+            };
+          }
+        }
+      }
+    }
+
     if (onProgress) {
       onProgress({ index: index + 1, total: sessionList.length, bucketsQueued: touchedBuckets.size });
     }
@@ -15915,8 +16124,20 @@ async function parseGrokBuildIncremental({
     bucketsQueued += retracted;
   }
 
+  const projectBucketsQueued = projectEnabled
+    ? await enqueueTouchedProjectBuckets({
+        projectQueuePath,
+        projectState,
+        projectTouchedBuckets,
+      })
+    : 0;
+
   hourlyState.updatedAt = new Date().toISOString();
   cursors.hourly = hourlyState;
+  if (projectState) {
+    projectState.updatedAt = hourlyState.updatedAt;
+    cursors.projectHourly = projectState;
+  }
   sessionSnapshots = capGrokSessionSnapshots(sessionSnapshots);
 
   const migrations = grokState.migrations && typeof grokState.migrations === "object"
@@ -15936,6 +16157,12 @@ async function parseGrokBuildIncremental({
     sessionSnapshots,
     seenSessions: Object.keys(sessionSnapshots),
     updateOffsets,
+    ...(projectEnabled
+      ? {
+          projectUpdateOffsets,
+          projectSessionSnapshots: capGrokSessionSnapshots(projectSessionSnapshots),
+        }
+      : {}),
     migrations,
     updatedAt: new Date().toISOString()
   };
@@ -15943,7 +16170,8 @@ async function parseGrokBuildIncremental({
   return {
     recordsProcessed: eventsAggregated,
     eventsAggregated,
-    bucketsQueued
+    bucketsQueued,
+    projectBucketsQueued,
   };
 }
 
