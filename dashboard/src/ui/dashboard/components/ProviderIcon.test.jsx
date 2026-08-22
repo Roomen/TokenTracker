@@ -49,11 +49,13 @@ describe("ProviderIcon", () => {
     expect(icon).toHaveAttribute("height", "20");
   });
 
-  it("renders the multi-color Pi brand logo", () => {
+  it("renders the official white Pi mark with explicit light and dark treatment", () => {
     const { container } = render(<ProviderIcon provider="pi" size={18} />);
     const icon = container.querySelector('img[src="/brand-logos/pi.svg"]');
     expect(icon).not.toBeNull();
     expect(icon).toHaveAttribute("width", "18");
+    // Official pi.dev/logo.svg is white-only: black on light, white on dark.
+    expect(icon).toHaveClass("brightness-0", "dark:brightness-100");
   });
 
   it("renders the Reasonix brand icon", () => {
@@ -109,5 +111,6 @@ describe("ProviderIcon", () => {
       const { container } = render(<ProviderIcon provider={provider} size={16} />);
       const icon = container.querySelector('img[src="/brand-logos/pi.svg"]');
       expect(icon, `${provider} maps to pi.svg`).not.toBeNull();
+      expect(icon, `${provider} switches luminance`).toHaveClass("brightness-0", "dark:brightness-100");
     }
   });

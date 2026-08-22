@@ -388,7 +388,9 @@ const PROVIDER_LOGO_MAP = {
   "KILO-CLI": "/brand-logos/kilo.svg",
   "KILO-CODE": "/brand-logos/kilo.svg",
   MIMO: "/brand-logos/mimo.svg",
-  // oh-my-pi / pi: multi-color brand marks (pi letterform + plugin connector).
+  // oh-my-pi: multi-color brand mark (pi letterform + plugin connector). pi
+  // itself publishes a white-only mark (pi.dev/logo.svg), so it gets the same
+  // <img> luminance treatment as AnythingLLM in PROVIDER_LOGO_CLASS_MAP.
   OMP: "/brand-logos/omp.svg",
   OPENCLAW: "/brand-logos/openclaw.svg",
   OPENCODE: "/brand-logos/opencode.svg",
@@ -413,6 +415,14 @@ const PROVIDER_LOGO_MAP = {
 // (which may differ from the OS preference) always has sufficient contrast.
 const PROVIDER_LOGO_CLASS_MAP = {
   ANYTHINGLLM: "brightness-0 dark:brightness-100",
+  // pi publishes its mark in white only (pi.dev/logo.svg) — same treatment
+  // as AnythingLLM: black on light backgrounds, native white on dark.
+  PI: "brightness-0 dark:brightness-100",
+  "PI-ANTHROPIC": "brightness-0 dark:brightness-100",
+  "PI-DEEPSEEK": "brightness-0 dark:brightness-100",
+  "PI-GITHUB-COPILOT": "brightness-0 dark:brightness-100",
+  "PI-COPILOT": "brightness-0 dark:brightness-100",
+  "PI-OPENAI-CODEX": "brightness-0 dark:brightness-100",
   QODER: "dark:invert",
 };
 
